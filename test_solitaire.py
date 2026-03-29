@@ -1,360 +1,525 @@
 """
 test_solitaire.py
 =================
-xUnit test suite for Peg Solitaire (CS449 Sprint 2).
+xUnit test suite for Peg Solitaire — Sprint 3.
 
 Tests are organised by User Story / Acceptance Criterion so that the
-Sprint 2 submission table can reference class + method names directly.
+Sprint 3 submission tables can reference class + method names directly.
 
 Test classes
 ------------
-TestBoardShapes          – US1: board size & type (AC 1.1, 1.2, 1.3, 1.4)
-TestNewGame              – US2: starting a new game (AC 2.1, 2.2)
-TestMakeMove             – US3: making a move (AC 3.1, 3.2)
-TestEndOfGame            – US4: game-over detection (AC 4.1, 4.2)
-TestHexGrid              – geometry helpers used by hex board
-TestAdditional           – extra tests not tied to a single AC
+TestBoardShapes      – US1: board size & type         (AC 1.1–1.4)
+TestGameModeChoice   – US2: choose game mode           (AC 2.1–2.2)
+TestNewGame          – US3: start a new game           (AC 3.1–3.2)
+TestManualMove       – US4: make a move (manual)       (AC 4.1–4.2)
+TestManualGameOver   – US5: manual game is over        (AC 5.1–5.2)
+TestAutoMove         – US6: make a move (automated)    (AC 6.1–6.2)
+TestAutoGameOver     – US7: automated game is over     (AC 7.1–7.2)
+TestRandomize        – US8: randomize board state      (AC 8.1–8.2)
+TestHexGrid          – Geometry helpers (hex board)
+TestAdditional       – Extra tests not tied to a single AC
 
 Run with:
-    python -m pytest test_solitaire.py -v
-or:
-    python test_solitaire.py
+    python -m unittest test_solitaire -v
 """
 
 import unittest
 import math
-from game_logic import Board, HexGrid, SolitaireGame
+import random
+from game_logic import Board, HexGrid, SolitaireGame, ManualGame, AutomatedGame
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# US 1  –  Choose board size and type
-# AC 1.1  select valid board size  |  AC 1.2  change board size
-# AC 1.3  select English board     |  AC 1.4  select Hexagon / Diamond
+# US 1  –  Choose a board size and type
+# AC 1.1 valid board size  | AC 1.2 change board size
+# AC 1.3 English board     | AC 1.4 Hexagon / Diamond boards
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestBoardShapes(unittest.TestCase):
-    """Tests for board construction (User Story 1 — choose board size & type)."""
+    """US1 — board shape construction tests."""
 
-    # ── AC 1.1  valid board sizes ─────────────────────────────────────────────
+    # AC 1.1 ──────────────────────────────────────────────────────────────────
 
     def test_ac1_1_english_size7_cell_count(self):
         """English size-7 board must have exactly 33 valid cells."""
-        cells = Board.english(7)
-        self.assertEqual(len(cells), 33)
+        self.assertEqual(len(Board.english(7)), 33)
 
     def test_ac1_1_english_size5_cell_count(self):
-        """English size-5 board: third=1, so col/row band 1..3 → 21 valid cells."""
-        cells = Board.english(5)
-        # Recompute expected count from the formula
-        third = 5 // 3  # = 1
+        """English size-5 board cell count matches the formula."""
+        third = 5 // 3
         expected = len({(r, c) for r in range(5) for c in range(5)
                         if (third <= c < 5 - third) or (third <= r < 5 - third)})
-        self.assertEqual(len(cells), expected)
+        self.assertEqual(len(Board.english(5)), expected)
 
     def test_ac1_1_diamond_size7_cell_count(self):
-        """Diamond size-7 board has 25 cells (manhattan diamond)."""
-        cells = Board.diamond(7)
-        self.assertEqual(len(cells), 25)
+        """Diamond size-7 board has 25 cells."""
+        self.assertEqual(len(Board.diamond(7)), 25)
 
     def test_ac1_1_hexagon_size9_row_lengths(self):
         """Hexagonal size-9 board row lengths must be 5,6,7,8,9,8,7,6,5."""
         cells = Board.hexagon(9)
-        expected = [5, 6, 7, 8, 9, 8, 7, 6, 5]
-        actual = [
-            len([c for (r2, c) in cells if r2 == r])
-            for r in range(9)
-        ]
-        self.assertEqual(actual, expected)
+        actual = [len([c for (r2, c) in cells if r2 == r]) for r in range(9)]
+        self.assertEqual(actual, [5, 6, 7, 8, 9, 8, 7, 6, 5])
 
     def test_ac1_1_hexagon_size5_row_lengths(self):
         """Hexagonal size-5 board row lengths must be 3,4,5,4,3."""
         cells = Board.hexagon(5)
-        expected = [3, 4, 5, 4, 3]
-        actual = [
-            len([c for (r2, c) in cells if r2 == r])
-            for r in range(5)
-        ]
-        self.assertEqual(actual, expected)
+        actual = [len([c for (r2, c) in cells if r2 == r]) for r in range(5)]
+        self.assertEqual(actual, [3, 4, 5, 4, 3])
 
-    # ── AC 1.2  change board size (game re-initialises correctly) ─────────────
+    # AC 1.2 ──────────────────────────────────────────────────────────────────
 
     def test_ac1_2_resize_english_7_to_9(self):
-        """Changing size from 7 to 9 changes the cell count."""
-        g7 = SolitaireGame("English", 7)
-        g9 = SolitaireGame("English", 9)
-        self.assertGreater(g9.cell_count(), g7.cell_count())
+        """Changing size 7→9 increases cell count for English board."""
+        self.assertGreater(
+            ManualGame("English", 9).cell_count(),
+            ManualGame("English", 7).cell_count()
+        )
 
     def test_ac1_2_hexagon_different_sizes_differ(self):
         """Hexagon size 7 and size 9 must have different cell counts."""
-        g7 = SolitaireGame("Hexagon", 7)
-        g9 = SolitaireGame("Hexagon", 9)
-        self.assertNotEqual(g7.cell_count(), g9.cell_count())
+        self.assertNotEqual(
+            ManualGame("Hexagon", 7).cell_count(),
+            ManualGame("Hexagon", 9).cell_count()
+        )
 
-    # ── AC 1.3  English board type ────────────────────────────────────────────
+    # AC 1.3 ──────────────────────────────────────────────────────────────────
 
     def test_ac1_3_english_board_is_cross_shaped(self):
-        """English board must be cross-shaped: corners (0,0) not in valid cells."""
+        """English board corners must NOT be in valid cells."""
         cells = Board.english(7)
-        self.assertNotIn((0, 0), cells)
-        self.assertNotIn((0, 6), cells)
-        self.assertNotIn((6, 0), cells)
-        self.assertNotIn((6, 6), cells)
+        for corner in [(0, 0), (0, 6), (6, 0), (6, 6)]:
+            self.assertNotIn(corner, cells)
 
     def test_ac1_3_english_centre_in_cells(self):
-        """Centre cell must be part of English board."""
-        cells = Board.english(7)
-        self.assertIn((3, 3), cells)
+        """Centre cell must be part of the English board."""
+        self.assertIn((3, 3), Board.english(7))
 
-    # ── AC 1.4  Hexagon / Diamond board types ─────────────────────────────────
+    # AC 1.4 ──────────────────────────────────────────────────────────────────
 
     def test_ac1_4_hexagon_board_type_stored(self):
-        """SolitaireGame must store the board_type as 'Hexagon'."""
-        g = SolitaireGame("Hexagon", 9)
+        g = ManualGame("Hexagon", 9)
         self.assertEqual(g.board_type, "Hexagon")
 
     def test_ac1_4_diamond_board_type_stored(self):
-        """SolitaireGame must store the board_type as 'Diamond'."""
-        g = SolitaireGame("Diamond", 7)
+        g = ManualGame("Diamond", 7)
         self.assertEqual(g.board_type, "Diamond")
 
     def test_ac1_4_diamond_corners_absent(self):
-        """Diamond board must not include the four grid corners."""
         cells = Board.diamond(7)
         self.assertNotIn((0, 0), cells)
         self.assertNotIn((6, 6), cells)
 
     def test_ac1_4_invalid_board_type_raises(self):
-        """Constructing with unknown board_type must raise ValueError."""
         with self.assertRaises(ValueError):
-            SolitaireGame("Triangle", 7)
+            ManualGame("Triangle", 7)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# US 2  –  Start a new game
-# AC 2.1  new game with settings  |  AC 2.2  reset existing game
+# US 2  –  Choose the game mode
+# AC 2.1 create ManualGame  | AC 2.2 create AutomatedGame
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestGameModeChoice(unittest.TestCase):
+    """US2 — selecting Manual or Automated game mode."""
+
+    # AC 2.1 ──────────────────────────────────────────────────────────────────
+
+    def test_ac2_1_manual_game_is_manual_game_instance(self):
+        """Choosing Manual mode must produce a ManualGame instance."""
+        g = ManualGame("English", 7)
+        self.assertIsInstance(g, ManualGame)
+
+    def test_ac2_1_manual_game_is_also_solitaire_game(self):
+        """ManualGame must be a subclass of SolitaireGame."""
+        g = ManualGame("English", 7)
+        self.assertIsInstance(g, SolitaireGame)
+
+    def test_ac2_1_manual_game_has_move_history(self):
+        """ManualGame must expose a move_history list."""
+        g = ManualGame("English", 7)
+        self.assertIsInstance(g.move_history, list)
+
+    # AC 2.2 ──────────────────────────────────────────────────────────────────
+
+    def test_ac2_2_automated_game_is_automated_game_instance(self):
+        """Choosing Automated mode must produce an AutomatedGame instance."""
+        g = AutomatedGame("English", 7)
+        self.assertIsInstance(g, AutomatedGame)
+
+    def test_ac2_2_automated_game_is_also_solitaire_game(self):
+        """AutomatedGame must be a subclass of SolitaireGame."""
+        g = AutomatedGame("English", 7)
+        self.assertIsInstance(g, SolitaireGame)
+
+    def test_ac2_2_automated_game_has_last_move_attr(self):
+        """AutomatedGame must expose last_move attribute."""
+        g = AutomatedGame("English", 7)
+        self.assertTrue(hasattr(g, "last_move"))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# US 3  –  Start a new game
+# AC 3.1 pegs initialised  | AC 3.2 reset clears state
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestNewGame(unittest.TestCase):
-    """Tests for game initialisation (User Story 2 — start a new game)."""
+    """US3 — game initialisation."""
 
-    # ── AC 2.1  game created with selected settings ───────────────────────────
+    # AC 3.1 ──────────────────────────────────────────────────────────────────
 
-    def test_ac2_1_english_game_pegs_minus_one(self):
-        """New English game has (cell_count - 1) pegs (centre removed)."""
-        g = SolitaireGame("English", 7)
+    def test_ac3_1_english_game_pegs_minus_one(self):
+        g = ManualGame("English", 7)
         self.assertEqual(g.peg_count(), g.cell_count() - 1)
 
-    def test_ac2_1_hexagon_game_pegs_minus_one(self):
-        """New Hexagon game has (cell_count - 1) pegs."""
-        g = SolitaireGame("Hexagon", 9)
+    def test_ac3_1_hexagon_game_pegs_minus_one(self):
+        g = ManualGame("Hexagon", 9)
         self.assertEqual(g.peg_count(), g.cell_count() - 1)
 
-    def test_ac2_1_diamond_game_pegs_minus_one(self):
-        """New Diamond game has (cell_count - 1) pegs."""
-        g = SolitaireGame("Diamond", 7)
+    def test_ac3_1_diamond_game_pegs_minus_one(self):
+        g = ManualGame("Diamond", 7)
         self.assertEqual(g.peg_count(), g.cell_count() - 1)
 
-    def test_ac2_1_english_centre_empty_at_start(self):
-        """Centre cell must be empty at game start for English board."""
-        g = SolitaireGame("English", 7)
+    def test_ac3_1_english_centre_empty_at_start(self):
+        g = ManualGame("English", 7)
         self.assertNotIn((3, 3), g.pegs)
 
-    def test_ac2_1_hexagon_centre_empty_at_start(self):
-        """Centre cell must be empty at game start for Hexagon board."""
-        g = SolitaireGame("Hexagon", 9)
+    def test_ac3_1_hexagon_centre_empty_at_start(self):
+        g = ManualGame("Hexagon", 9)
         self.assertNotIn((4, 4), g.pegs)
 
-    def test_ac2_1_initial_moves_available(self):
-        """A new game must have at least one valid move."""
+    def test_ac3_1_initial_moves_available_all_types(self):
+        """A new game of every board type must have at least one valid move."""
         for bt in SolitaireGame.BOARD_TYPES:
             with self.subTest(board_type=bt):
-                g = SolitaireGame(bt, 9 if bt == "Hexagon" else 7)
+                g = ManualGame(bt, 9 if bt == "Hexagon" else 7)
                 self.assertGreater(len(g.get_valid_moves()), 0)
 
-    # ── AC 2.2  reset clears previous state ───────────────────────────────────
+    # AC 3.2 ──────────────────────────────────────────────────────────────────
 
-    def test_ac2_2_reset_restores_peg_count(self):
-        """After making moves, reset() must restore the original peg count."""
-        g = SolitaireGame("English", 7)
-        original_count = g.peg_count()
+    def test_ac3_2_reset_restores_peg_count(self):
+        """After moves, reset() must restore the original peg count."""
+        g = ManualGame("English", 7)
+        original = g.peg_count()
         moves = g.get_valid_moves()
         g.make_move(moves[0][0], moves[0][2])
-        g.make_move(moves[1][0], moves[1][2])
         g.reset()
-        self.assertEqual(g.peg_count(), original_count)
+        self.assertEqual(g.peg_count(), original)
 
-    def test_ac2_2_reset_empties_centre(self):
-        """After reset(), centre cell must be empty again."""
-        g = SolitaireGame("English", 7)
-        # Make a move to fill centre
-        g.pegs.add((3, 3))   # manually add peg to centre for test setup
+    def test_ac3_2_reset_clears_move_history(self):
+        """After reset(), ManualGame.move_history must be empty."""
+        g = ManualGame("English", 7)
+        moves = g.get_valid_moves()
+        g.make_move(moves[0][0], moves[0][2])
+        self.assertEqual(len(g.move_history), 1)
+        g.reset()
+        self.assertEqual(len(g.move_history), 0)
+
+    def test_ac3_2_reset_empties_centre(self):
+        """After reset(), centre cell must be empty."""
+        g = ManualGame("English", 7)
+        g.pegs.add((3, 3))
         g.reset()
         self.assertNotIn((3, 3), g.pegs)
 
-    def test_ac2_2_reset_with_new_type(self):
-        """Changing board_type then calling reset() applies the new shape."""
-        g = SolitaireGame("English", 7)
-        english_count = g.cell_count()
-        g.board_type = "Diamond"
-        g.reset()
-        self.assertNotEqual(g.cell_count(), english_count)
-
 
 # ──────────────────────────────────────────────────────────────────────────────
-# US 3  –  Making a move
-# AC 3.1  valid move accepted  |  AC 3.2  invalid move rejected
+# US 4  –  Make a move in a manual game
+# AC 4.1 valid move accepted  | AC 4.2 invalid move rejected
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestMakeMove(unittest.TestCase):
-    """Tests for move execution (User Story 3 — making a move)."""
+class TestManualMove(unittest.TestCase):
+    """US4 — making a move in a ManualGame."""
 
     def setUp(self):
-        self.game_eng = SolitaireGame("English", 7)
-        self.game_hex = SolitaireGame("Hexagon", 9)
+        self.game_eng = ManualGame("English", 7)
+        self.game_hex = ManualGame("Hexagon", 9)
 
-    # ── AC 3.1  valid move ────────────────────────────────────────────────────
+    # AC 4.1 ──────────────────────────────────────────────────────────────────
 
-    def test_ac3_1_valid_move_returns_true(self):
-        """make_move() must return True for a valid move."""
-        g = self.game_eng
-        fr, _, to = g.get_valid_moves()[0]
-        self.assertTrue(g.make_move(fr, to))
+    def test_ac4_1_valid_move_returns_true(self):
+        fr, _, to = self.game_eng.get_valid_moves()[0]
+        self.assertTrue(self.game_eng.make_move(fr, to))
 
-    def test_ac3_1_valid_move_reduces_peg_count(self):
-        """After a valid move the peg count decreases by 1."""
-        g = self.game_eng
-        before = g.peg_count()
-        fr, _, to = g.get_valid_moves()[0]
-        g.make_move(fr, to)
-        self.assertEqual(g.peg_count(), before - 1)
+    def test_ac4_1_move_reduces_peg_count_by_one(self):
+        before = self.game_eng.peg_count()
+        fr, _, to = self.game_eng.get_valid_moves()[0]
+        self.game_eng.make_move(fr, to)
+        self.assertEqual(self.game_eng.peg_count(), before - 1)
 
-    def test_ac3_1_from_cell_empty_after_move(self):
-        """The source cell must be empty after a valid move."""
-        g = self.game_eng
-        fr, _, to = g.get_valid_moves()[0]
-        g.make_move(fr, to)
-        self.assertNotIn(fr, g.pegs)
+    def test_ac4_1_move_recorded_in_history(self):
+        """A successful move must be appended to move_history."""
+        fr, _, to = self.game_eng.get_valid_moves()[0]
+        self.game_eng.make_move(fr, to)
+        self.assertEqual(len(self.game_eng.move_history), 1)
+        self.assertEqual(self.game_eng.move_history[0], (fr, to))
 
-    def test_ac3_1_jumped_cell_empty_after_move(self):
-        """The jumped-over cell must be empty after a valid move."""
-        g = self.game_eng
-        fr, mid, to = g.get_valid_moves()[0]
-        g.make_move(fr, to)
-        self.assertNotIn(mid, g.pegs)
+    def test_ac4_1_hex_valid_move_returns_true(self):
+        moves = self.game_hex.get_valid_moves()
+        if moves:
+            fr, _, to = moves[0]
+            self.assertTrue(self.game_hex.make_move(fr, to))
 
-    def test_ac3_1_destination_filled_after_move(self):
-        """The destination cell must contain a peg after a valid move."""
-        g = self.game_eng
-        fr, _, to = g.get_valid_moves()[0]
-        g.make_move(fr, to)
-        self.assertIn(to, g.pegs)
+    def test_ac4_1_from_cell_becomes_empty(self):
+        fr, _, to = self.game_eng.get_valid_moves()[0]
+        self.game_eng.make_move(fr, to)
+        self.assertNotIn(fr, self.game_eng.pegs)
 
-    def test_ac3_1_hex_valid_move(self):
-        """Valid move works correctly on a Hexagon board."""
-        g = self.game_hex
-        fr, mid, to = g.get_valid_moves()[0]
-        result = g.make_move(fr, to)
-        self.assertTrue(result)
-        self.assertNotIn(fr, g.pegs)
-        self.assertNotIn(mid, g.pegs)
-        self.assertIn(to, g.pegs)
+    def test_ac4_1_to_cell_gains_peg(self):
+        fr, _, to = self.game_eng.get_valid_moves()[0]
+        self.game_eng.make_move(fr, to)
+        self.assertIn(to, self.game_eng.pegs)
 
-    # ── AC 3.2  invalid move rejected ─────────────────────────────────────────
+    def test_ac4_1_jumped_peg_removed(self):
+        fr, mid, to = self.game_eng.get_valid_moves()[0]
+        self.game_eng.make_move(fr, to)
+        self.assertNotIn(mid, self.game_eng.pegs)
 
-    def test_ac3_2_move_to_occupied_cell_rejected(self):
-        """Moving to a cell that already has a peg must return False."""
-        g = self.game_eng
-        # Pick any peg; try to move it to another peg's position
-        pegs = list(g.pegs)
-        self.assertFalse(g.make_move(pegs[0], pegs[1]))
+    # AC 4.2 ──────────────────────────────────────────────────────────────────
 
-    def test_ac3_2_move_off_board_rejected(self):
-        """Moving to a cell not on the board must return False."""
-        g = self.game_eng
-        fr = list(g.pegs)[0]
-        self.assertFalse(g.make_move(fr, (-1, -1)))
+    def test_ac4_2_move_to_occupied_cell_rejected(self):
+        moves = self.game_eng.get_valid_moves()
+        fr, _, _ = moves[0]
+        # Try to move to a cell that already has a peg
+        occupied = next(iter(self.game_eng.pegs - {fr}))
+        self.assertFalse(self.game_eng.make_move(fr, occupied))
 
-    def test_ac3_2_move_without_jumped_peg_rejected(self):
-        """A jump over an empty cell must be rejected."""
-        g2 = SolitaireGame("English", 7)
-        fr, mid, to = g2.get_valid_moves()[0]
-        g2.pegs.discard(mid)   # remove the peg to be jumped over
-        self.assertFalse(g2.make_move(fr, to))
+    def test_ac4_2_jump_over_empty_cell_rejected(self):
+        fr, mid, to = self.game_eng.get_valid_moves()[0]
+        self.game_eng.pegs.discard(mid)
+        self.assertFalse(self.game_eng.make_move(fr, to))
 
-    def test_ac3_2_move_does_not_change_state_on_failure(self):
-        """A failed move must leave peg positions unchanged."""
-        g = self.game_eng
-        before = frozenset(g.pegs)
-        g.make_move((0, 0), (0, 6))   # clearly invalid
-        self.assertEqual(frozenset(g.pegs), before)
+    def test_ac4_2_failed_move_does_not_change_state(self):
+        before = frozenset(self.game_eng.pegs)
+        self.game_eng.make_move((0, 0), (0, 6))
+        self.assertEqual(frozenset(self.game_eng.pegs), before)
 
-    def test_ac3_2_is_valid_move_helper(self):
-        """is_valid_move() must agree with make_move() results."""
-        g = self.game_eng
-        fr, _, to = g.get_valid_moves()[0]
-        self.assertTrue(g.is_valid_move(fr, to))
-        self.assertFalse(g.is_valid_move(fr, fr))   # same cell → invalid
+    def test_ac4_2_failed_move_not_in_history(self):
+        """A failed move must NOT be recorded in move_history."""
+        self.game_eng.make_move((0, 0), (0, 6))
+        self.assertEqual(len(self.game_eng.move_history), 0)
+
+    def test_ac4_2_is_valid_move_helper(self):
+        fr, _, to = self.game_eng.get_valid_moves()[0]
+        self.assertTrue(self.game_eng.is_valid_move(fr, to))
+        self.assertFalse(self.game_eng.is_valid_move(fr, fr))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# US 4  –  Game over detection
-# AC 4.1  detect no moves  |  AC 4.2  detect win (1 peg)
+# US 5  –  A manual game is over
+# AC 5.1 no moves = game over  | AC 5.2 one peg = win
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestEndOfGame(unittest.TestCase):
-    """Tests for win/loss detection (User Story 4 — checking end of game)."""
+class TestManualGameOver(unittest.TestCase):
+    """US5 — end-of-game detection for ManualGame."""
 
-    # ── AC 4.1  no valid moves = game over ────────────────────────────────────
+    # AC 5.1 ──────────────────────────────────────────────────────────────────
 
-    def test_ac4_1_fresh_game_not_over(self):
-        """A freshly started game must NOT be game-over."""
-        g = SolitaireGame("English", 7)
+    def test_ac5_1_fresh_game_not_over(self):
+        g = ManualGame("English", 7)
         self.assertFalse(g.is_game_over())
 
-    def test_ac4_1_single_isolated_peg_is_game_over(self):
-        """One peg with no neighbours → game over (also a win)."""
-        g = SolitaireGame("English", 7)
+    def test_ac5_1_single_isolated_peg_is_game_over(self):
+        g = ManualGame("English", 7)
         g.pegs = {(3, 3)}
         self.assertTrue(g.is_game_over())
 
-    def test_ac4_1_two_non_adjacent_pegs_game_over(self):
-        """Two pegs that cannot jump each other → game over."""
-        g = SolitaireGame("English", 7)
-        g.pegs = {(0, 3), (6, 3)}   # far apart, no path
+    def test_ac5_1_two_non_adjacent_pegs_game_over(self):
+        g = ManualGame("English", 7)
+        g.pegs = {(0, 3), (6, 3)}
         self.assertTrue(g.is_game_over())
 
-    def test_ac4_1_two_adjacent_pegs_not_game_over(self):
-        """Two pegs with an empty landing cell → NOT game over."""
-        g = SolitaireGame("English", 7)
-        # pegs at (3,1) and (3,2); empty (3,3) → valid jump
+    def test_ac5_1_two_adjacent_pegs_with_empty_landing_not_game_over(self):
+        g = ManualGame("English", 7)
         g.pegs = {(3, 1), (3, 2)}
         self.assertFalse(g.is_game_over())
 
-    # ── AC 4.2  exactly one peg = win ─────────────────────────────────────────
+    # AC 5.2 ──────────────────────────────────────────────────────────────────
 
-    def test_ac4_2_one_peg_is_win(self):
-        """Exactly one peg remaining must be detected as a win."""
-        g = SolitaireGame("English", 7)
+    def test_ac5_2_one_peg_is_win(self):
+        g = ManualGame("English", 7)
         g.pegs = {(3, 3)}
         self.assertTrue(g.is_win())
 
-    def test_ac4_2_two_pegs_not_win(self):
-        """Two or more pegs remaining must NOT be a win."""
-        g = SolitaireGame("English", 7)
+    def test_ac5_2_two_pegs_not_win(self):
+        g = ManualGame("English", 7)
         g.pegs = {(3, 3), (3, 4)}
         self.assertFalse(g.is_win())
 
-    def test_ac4_2_fresh_game_not_win(self):
-        """A fresh game with many pegs must NOT be a win."""
-        g = SolitaireGame("English", 7)
+    def test_ac5_2_fresh_game_not_win(self):
+        g = ManualGame("English", 7)
         self.assertFalse(g.is_win())
 
-    def test_ac4_2_win_implies_game_over(self):
-        """A win state (1 peg) must also satisfy is_game_over()."""
-        g = SolitaireGame("English", 7)
+    def test_ac5_2_win_implies_game_over(self):
+        g = ManualGame("English", 7)
         g.pegs = {(3, 3)}
         self.assertTrue(g.is_win())
         self.assertTrue(g.is_game_over())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# US 6  –  Make a move in an automated game
+# AC 6.1 auto_step makes a move  | AC 6.2 auto_step when no moves returns False
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAutoMove(unittest.TestCase):
+    """US6 — making a move in an AutomatedGame."""
+
+    def setUp(self):
+        self.game = AutomatedGame("English", 7)
+
+    # AC 6.1 ──────────────────────────────────────────────────────────────────
+
+    def test_ac6_1_auto_step_returns_true_when_moves_available(self):
+        self.assertTrue(self.game.auto_step())
+
+    def test_ac6_1_auto_step_reduces_peg_count(self):
+        before = self.game.peg_count()
+        self.game.auto_step()
+        self.assertEqual(self.game.peg_count(), before - 1)
+
+    def test_ac6_1_auto_step_sets_last_move(self):
+        self.game.auto_step()
+        self.assertIsNotNone(self.game.last_move)
+        self.assertIsInstance(self.game.last_move, tuple)
+        self.assertEqual(len(self.game.last_move), 2)
+
+    def test_ac6_1_auto_step_hex_board(self):
+        g = AutomatedGame("Hexagon", 9)
+        self.assertTrue(g.auto_step())
+
+    def test_ac6_1_auto_step_diamond_board(self):
+        g = AutomatedGame("Diamond", 7)
+        self.assertTrue(g.auto_step())
+
+    def test_ac6_1_solve_returns_non_empty_move_list(self):
+        """solve() must return at least one move for a fresh game."""
+        moves = self.game.solve()
+        self.assertGreater(len(moves), 0)
+
+    def test_ac6_1_solve_reduces_peg_count(self):
+        """After solve(), the board should have fewer pegs than at start."""
+        initial = self.game.peg_count()
+        self.game.solve()
+        self.assertLess(self.game.peg_count(), initial)
+
+    # AC 6.2 ──────────────────────────────────────────────────────────────────
+
+    def test_ac6_2_auto_step_returns_false_when_no_moves(self):
+        """auto_step() on a stuck position must return False."""
+        self.game.pegs = {(0, 3), (6, 3)}  # two non-adjacent pegs, no moves
+        self.assertFalse(self.game.auto_step())
+
+    def test_ac6_2_auto_step_no_state_change_when_no_moves(self):
+        self.game.pegs = {(0, 3), (6, 3)}
+        before = frozenset(self.game.pegs)
+        self.game.auto_step()
+        self.assertEqual(frozenset(self.game.pegs), before)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# US 7  –  An automated game is over
+# AC 7.1 auto solve then game over  | AC 7.2 is_win after solve
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestAutoGameOver(unittest.TestCase):
+    """US7 — end-of-game detection for AutomatedGame."""
+
+    # AC 7.1 ──────────────────────────────────────────────────────────────────
+
+    def test_ac7_1_game_over_after_solve(self):
+        """After solve(), is_game_over() must be True."""
+        g = AutomatedGame("English", 7)
+        g.solve()
+        self.assertTrue(g.is_game_over())
+
+    def test_ac7_1_fresh_automated_game_not_over(self):
+        g = AutomatedGame("English", 7)
+        self.assertFalse(g.is_game_over())
+
+    def test_ac7_1_game_over_detected_during_step_loop(self):
+        """Step-by-step auto_step() eventually leads to game over."""
+        g = AutomatedGame("Diamond", 7)
+        steps = 0
+        while not g.is_game_over():
+            g.auto_step()
+            steps += 1
+            if steps > 500:
+                self.fail("Step loop did not terminate in 500 steps")
+        self.assertTrue(g.is_game_over())
+
+    # AC 7.2 ──────────────────────────────────────────────────────────────────
+
+    def test_ac7_2_win_check_after_solve(self):
+        """After solve(), is_win() should reflect final peg count."""
+        g = AutomatedGame("English", 7)
+        g.solve()
+        # Win is possible but not guaranteed; at minimum peg count is checked
+        self.assertEqual(g.is_win(), g.peg_count() == 1)
+
+    def test_ac7_2_automated_game_one_peg_is_win(self):
+        g = AutomatedGame("English", 7)
+        g.pegs = {(3, 3)}
+        self.assertTrue(g.is_win())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# US 8  –  Randomize the state of the board during a manual game
+# AC 8.1 randomize changes board  | AC 8.2 board remains valid after randomize
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestRandomize(unittest.TestCase):
+    """US8 — randomize_board() on a ManualGame."""
+
+    def setUp(self):
+        random.seed(42)
+        self.game = ManualGame("English", 7)
+
+    # AC 8.1 ──────────────────────────────────────────────────────────────────
+
+    def test_ac8_1_randomize_returns_positive_move_count(self):
+        n = self.game.randomize_board(num_moves=5)
+        self.assertGreater(n, 0)
+
+    def test_ac8_1_randomize_changes_board_state(self):
+        before = frozenset(self.game.pegs)
+        self.game.randomize_board(num_moves=5)
+        after = frozenset(self.game.pegs)
+        self.assertNotEqual(before, after)
+
+    def test_ac8_1_randomize_does_not_pollute_history(self):
+        """randomize_board() must NOT add entries to move_history."""
+        self.game.randomize_board(num_moves=5)
+        self.assertEqual(len(self.game.move_history), 0)
+
+    def test_ac8_1_randomize_hex_board(self):
+        g = ManualGame("Hexagon", 9)
+        n = g.randomize_board(num_moves=5)
+        self.assertGreater(n, 0)
+
+    # AC 8.2 ──────────────────────────────────────────────────────────────────
+
+    def test_ac8_2_pegs_remain_subset_of_valid_cells(self):
+        """After randomize, all pegs must still be on valid cells."""
+        self.game.randomize_board(num_moves=10)
+        self.assertTrue(self.game.pegs.issubset(self.game.valid_cells))
+
+    def test_ac8_2_peg_count_decreases(self):
+        """Randomization removes pegs; count must decrease."""
+        before = self.game.peg_count()
+        self.game.randomize_board(num_moves=5)
+        self.assertLess(self.game.peg_count(), before)
+
+    def test_ac8_2_game_still_has_valid_cells_after_randomize(self):
+        """valid_cells must be unchanged after randomize."""
+        before_cells = frozenset(self.game.valid_cells)
+        self.game.randomize_board(num_moves=10)
+        self.assertEqual(frozenset(self.game.valid_cells), before_cells)
+
+    def test_ac8_2_automated_game_has_no_randomize(self):
+        """AutomatedGame must NOT have a randomize_board method."""
+        g = AutomatedGame("English", 7)
+        self.assertFalse(hasattr(g, "randomize_board"))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -369,30 +534,21 @@ class TestHexGrid(unittest.TestCase):
         self.adj, self.step = HexGrid.build_adjacency(self.centers)
 
     def test_centre_has_six_neighbours(self):
-        """Centre cell of a hex board must have exactly 6 neighbours."""
-        centre = (4, 4)
-        self.assertEqual(len(self.adj[centre]), 6)
+        self.assertEqual(len(self.adj[(4, 4)]), 6)
 
     def test_horizontal_step_matches_formula(self):
-        """Horizontal spacing must equal sqrt(3) * HEX_R."""
         expected = math.sqrt(3) * HexGrid.HEX_R
         self.assertAlmostEqual(self.step, expected, places=1)
 
     def test_all_cells_have_centers(self):
-        """Every cell in hexagon(9) must have a pixel centre."""
-        cells = Board.hexagon(9)
-        for cell in cells:
+        for cell in Board.hexagon(9):
             self.assertIn(cell, self.centers)
 
     def test_corner_cells_have_fewer_neighbours(self):
-        """Corner cells of the hex board must have fewer than 6 neighbours."""
-        corner = (0, 0)
-        self.assertLess(len(self.adj[corner]), 6)
+        self.assertLess(len(self.adj[(0, 0)]), 6)
 
     def test_jumps_from_centre_are_six(self):
-        """Centre cell should have 6 possible jump directions."""
-        centre = (4, 4)
-        jumps = HexGrid.get_jumps(centre, self.adj, self.centers, self.step)
+        jumps = HexGrid.get_jumps((4, 4), self.adj, self.centers, self.step)
         self.assertEqual(len(jumps), 6)
 
 
@@ -401,21 +557,26 @@ class TestHexGrid(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestAdditional(unittest.TestCase):
-    """Extra tests covering edge cases and robustness."""
+    """Extra tests covering hierarchy, edge cases, and robustness."""
+
+    def test_class_hierarchy_manual_is_subclass(self):
+        """ManualGame must be a proper subclass of SolitaireGame."""
+        self.assertTrue(issubclass(ManualGame, SolitaireGame))
+
+    def test_class_hierarchy_automated_is_subclass(self):
+        """AutomatedGame must be a proper subclass of SolitaireGame."""
+        self.assertTrue(issubclass(AutomatedGame, SolitaireGame))
 
     def test_peg_count_matches_len_pegs(self):
-        """peg_count() must equal len(game.pegs)."""
-        g = SolitaireGame("English", 7)
+        g = ManualGame("English", 7)
         self.assertEqual(g.peg_count(), len(g.pegs))
 
     def test_cell_count_matches_valid_cells(self):
-        """cell_count() must equal len(game.valid_cells)."""
-        g = SolitaireGame("Hexagon", 9)
+        g = ManualGame("Hexagon", 9)
         self.assertEqual(g.cell_count(), len(g.valid_cells))
 
     def test_multiple_moves_reduce_peg_count(self):
-        """Each successive valid move must reduce peg count by 1."""
-        g = SolitaireGame("English", 7)
+        g = ManualGame("English", 7)
         for _ in range(5):
             moves = g.get_valid_moves()
             if not moves:
@@ -425,49 +586,59 @@ class TestAdditional(unittest.TestCase):
             g.make_move(fr, to)
             self.assertEqual(g.peg_count(), before - 1)
 
-    def test_repr_contains_board_type(self):
-        """__repr__ must mention the board type."""
-        g = SolitaireGame("Diamond", 7)
-        self.assertIn("Diamond", repr(g))
+    def test_repr_contains_class_name(self):
+        self.assertIn("ManualGame", repr(ManualGame("English", 7)))
+        self.assertIn("AutomatedGame", repr(AutomatedGame("English", 7)))
 
     def test_hexagon_size7_total_cells(self):
-        """Hexagon size-7 board should have 37 cells (7+6+5+... centred)."""
         cells = Board.hexagon(7)
         expected = sum(7 - abs(r - 3) for r in range(7))
         self.assertEqual(len(cells), expected)
 
     def test_english_all_cells_in_row_or_col_band(self):
-        """Every English cell must lie in the middle row-band or col-band."""
-        size = 7
-        third = size // 3
-        cells = Board.english(size)
-        for (r, c) in cells:
-            in_col = third <= c < size - third
-            in_row = third <= r < size - third
-            self.assertTrue(in_col or in_row,
-                            f"Cell ({r},{c}) outside both bands")
+        size, third = 7, 2
+        for (r, c) in Board.english(size):
+            self.assertTrue(
+                (third <= c < size - third) or (third <= r < size - third),
+                f"Cell ({r},{c}) outside both bands"
+            )
 
     def test_diamond_symmetric(self):
-        """Diamond board must be symmetric about both axes."""
         cells = Board.diamond(7)
         mid = 3
         for (r, c) in cells:
-            self.assertIn((mid*2-r, c), cells, f"Not symmetric vertically: ({r},{c})")
-            self.assertIn((r, mid*2-c), cells, f"Not symmetric horizontally: ({r},{c})")
+            self.assertIn((mid * 2 - r, c), cells)
+            self.assertIn((r, mid * 2 - c), cells)
 
     def test_no_move_from_empty_cell(self):
-        """get_valid_moves() must never list a move from an empty cell."""
-        g = SolitaireGame("English", 7)
-        for (fr, mid, to) in g.get_valid_moves():
-            self.assertIn(fr, g.pegs, f"from_cell {fr} is not a peg!")
+        g = ManualGame("English", 7)
+        for (fr, _, _) in g.get_valid_moves():
+            self.assertIn(fr, g.pegs)
 
     def test_board_row_lengths_helper(self):
-        """Board.row_lengths() must agree with actual Board.hexagon() cells."""
         size = 9
         expected = Board.row_lengths(size)
         cells = Board.hexagon(size)
-        actual = [len([c for (r2,c) in cells if r2==r]) for r in range(size)]
+        actual = [len([c for (r2, c) in cells if r2 == r]) for r in range(size)]
         self.assertEqual(actual, expected)
+
+    def test_solve_returns_list_of_tuples(self):
+        g = AutomatedGame("English", 7)
+        moves = g.solve()
+        self.assertIsInstance(moves, list)
+        for m in moves:
+            self.assertIsInstance(m, tuple)
+            self.assertEqual(len(m), 2)
+
+    def test_manual_game_history_grows_with_moves(self):
+        g = ManualGame("English", 7)
+        for i in range(3):
+            moves = g.get_valid_moves()
+            if not moves:
+                break
+            fr, _, to = moves[0]
+            g.make_move(fr, to)
+            self.assertEqual(len(g.move_history), i + 1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

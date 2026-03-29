@@ -4,14 +4,20 @@ game_logic.py
 Pure game-logic layer for Peg Solitaire.
 No GUI / tkinter imports here — fully unit-testable in isolation.
 
-Classes
--------
-Board       – builds valid-cell sets for English, Hexagon, Diamond boards
-HexGrid     – computes pixel centres and adjacency for the hexagonal board
-SolitaireGame – owns game state, move validation, win/loss detection
+Class hierarchy (Sprint 3)
+--------------------------
+SolitaireGame  – abstract base: board setup, move validation, win/loss detection
+  ManualGame   – human-driven play; adds randomize_board()
+  AutomatedGame – solver-driven play; adds auto_step() and solve()
+
+Supporting classes
+------------------
+Board    – static factories that return valid-cell sets
+HexGrid  – pixel geometry and adjacency for the hexagonal board
 """
 
 import math
+import random
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -19,11 +25,11 @@ import math
 # ──────────────────────────────────────────────────────────────────────────────
 
 class Board:
-    """Static factory methods that return a frozenset of valid (row, col) cells."""
+    """Static factory methods that return a set of valid (row, col) cells."""
 
     @staticmethod
     def english(size: int = 7) -> set:
-        """Cross-shaped English board. size must be odd."""
+        """Cross-shaped English board.  size must be odd."""
         cells = set()
         third = size // 3
         for r in range(size):
@@ -47,8 +53,8 @@ class Board:
     def hexagon(size: int = 9) -> set:
         """
         Hexagonal board.
-        Row lengths for size=9: 5,6,7,8,9,8,7,6,5
-        General formula: row r has (size - |r - mid|) cells.
+        Row lengths for size=9: 5,6,7,8,9,8,7,6,5.
+        General: row r has (size - |r - mid|) cells.
         """
         cells = set()
         mid = size // 2
@@ -71,8 +77,8 @@ class Board:
 
 class HexGrid:
     """
-    Computes pixel centres for a pointy-top hexagonal grid and
-    builds adjacency lists used for move detection.
+    Pixel centres for a pointy-top hexagonal grid and adjacency lists
+    used for move detection.
     """
 
     HEX_R = 21  # circumradius in pixels
@@ -82,7 +88,6 @@ class HexGrid:
         """
         Returns (centers_dict, canvas_width, canvas_height).
         centers_dict maps (row, col) -> (cx, cy).
-        Uses pointy-top layout: h_space = sqrt(3)*R, v_space = 1.5*R.
         """
         R = cls.HEX_R
         h_space = math.sqrt(3) * R
@@ -109,13 +114,11 @@ class HexGrid:
         """
         Build neighbour lists by proximity.
         Returns (adjacency_dict, step_distance).
-        Two cells are neighbours when their distance ≈ step (smallest pairwise dist).
         """
         cells = list(centers.keys())
         if len(cells) < 2:
             return {c: [] for c in cells}, 1.0
 
-        # Sample to find step distance
         sample = cells[:min(30, len(cells))]
         dists = []
         for i, a in enumerate(sample):
@@ -143,7 +146,6 @@ class HexGrid:
                   centers: dict, step: float) -> list:
         """
         Return all (mid_cell, to_cell) jump pairs reachable from cell.
-        A jump reflects cell through mid to land on to.
         """
         cx, cy = centers[cell]
         jumps = []
@@ -161,19 +163,21 @@ class HexGrid:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Game state
+# Base game class
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SolitaireGame:
     """
-    Owns all mutable game state.
+    Abstract base class owning all board state.
 
-    Attributes
-    ----------
-    board_type  : "English" | "Hexagon" | "Diamond"
-    size        : int  (board size parameter)
-    valid_cells : set of (r, c) that are part of the board
-    pegs        : set of (r, c) that currently hold a peg
+    Common behaviour (shared by ManualGame and AutomatedGame)
+    ---------------------------------------------------------
+    * Building the board shape (English / Hexagon / Diamond)
+    * Placing pegs at the start (all cells except centre)
+    * Validating and executing individual moves
+    * Detecting game-over and win conditions
+
+    Subclasses add mode-specific behaviour without duplicating this logic.
     """
 
     BOARD_TYPES = ("English", "Hexagon", "Diamond")
@@ -206,7 +210,7 @@ class SolitaireGame:
         else:  # Hexagon
             self.valid_cells = Board.hexagon(size)
             mid = size // 2
-            row_len = size  # widest row
+            row_len = size          # widest row length
             center = (mid, row_len // 2)
             self._centers, _, _ = HexGrid.cell_centers(size)
             self._adjacency, self._step = HexGrid.build_adjacency(self._centers)
@@ -231,7 +235,7 @@ class SolitaireGame:
             else:
                 for dr, dc in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
                     mid = (r + dr // 2, c + dc // 2)
-                    to = (r + dr, c + dc)
+                    to  = (r + dr, c + dc)
                     if (mid in self.valid_cells
                             and to in self.valid_cells
                             and mid in self.pegs
@@ -249,7 +253,7 @@ class SolitaireGame:
     def make_move(self, from_cell: tuple, to_cell: tuple) -> bool:
         """
         Attempt to move the peg at from_cell to to_cell.
-        Returns True and mutates state on success; returns False otherwise.
+        Returns True and mutates state on success; False otherwise.
         """
         if self.board_type == "Hexagon":
             for mid, to in HexGrid.get_jumps(
@@ -298,5 +302,151 @@ class SolitaireGame:
         return len(self.valid_cells)
 
     def __repr__(self) -> str:
-        return (f"SolitaireGame(type={self.board_type!r}, size={self.size}, "
-                f"pegs={self.peg_count()})")
+        return (f"{self.__class__.__name__}(type={self.board_type!r}, "
+                f"size={self.size}, pegs={self.peg_count()})")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ManualGame  (Sprint 3 subclass)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ManualGame(SolitaireGame):
+    """
+    Human-controlled game mode.
+
+    Extends SolitaireGame with:
+    * randomize_board() – scramble current peg positions into a reachable-
+                          looking random state while keeping the game playable.
+    * move_history     – ordered list of moves made this session.
+
+    Everything else (board setup, move execution, win detection) is inherited
+    unchanged from SolitaireGame, avoiding any code duplication.
+    """
+
+    def __init__(self, board_type: str = "Hexagon", size: int = 9):
+        super().__init__(board_type, size)
+        self.move_history: list = []   # list of (from_cell, to_cell) tuples
+
+    def reset(self) -> None:
+        """Reset board state and clear move history."""
+        super().reset()
+        # move_history may not exist yet on the very first super().__init__ call
+        if hasattr(self, "move_history"):
+            self.move_history.clear()
+
+    def make_move(self, from_cell: tuple, to_cell: tuple) -> bool:
+        """Execute a move and record it in move_history."""
+        ok = super().make_move(from_cell, to_cell)
+        if ok:
+            self.move_history.append((from_cell, to_cell))
+        return ok
+
+    def randomize_board(self, num_moves: int = 10) -> int:
+        """
+        Randomize board state by executing up to num_moves random legal moves
+        starting from the current position.
+
+        Returns the number of moves actually executed.
+        Does NOT record moves in move_history (randomization is not a player
+        move sequence).
+        """
+        executed = 0
+        for _ in range(num_moves):
+            moves = self.get_valid_moves()
+            if not moves:
+                break
+            fr, _, to = random.choice(moves)
+            # Call SolitaireGame.make_move directly so we don't pollute history
+            super().make_move(fr, to)
+            executed += 1
+        return executed
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# AutomatedGame  (Sprint 3 subclass)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class AutomatedGame(SolitaireGame):
+    """
+    Solver-driven game mode.
+
+    Extends SolitaireGame with:
+    * auto_step()  – execute one move chosen by the heuristic solver.
+    * solve()      – play the game to completion and return the move list.
+    * last_move    – the most recent (from_cell, to_cell) chosen by the solver.
+
+    The heuristic: prefer moves whose landing cell is closer to the board
+    centre, breaking ties randomly.  This produces visually coherent play
+    without requiring expensive backtracking.
+    """
+
+    def __init__(self, board_type: str = "Hexagon", size: int = 9):
+        super().__init__(board_type, size)
+        self.last_move: tuple | None = None   # (from_cell, to_cell) or None
+
+    def reset(self) -> None:
+        super().reset()
+        if hasattr(self, "last_move"):
+            self.last_move = None
+
+    def _heuristic_move(self) -> tuple | None:
+        """
+        Select the best move according to the centre-proximity heuristic.
+        Returns (from_cell, to_cell) or None if no moves exist.
+        """
+        moves = self.get_valid_moves()
+        if not moves:
+            return None
+
+        mid = self.size / 2
+        if self.board_type == "Hexagon":
+            # Use pixel centre distance for hex boards
+            cx_mid = (self.size / 2) * math.sqrt(3) * HexGrid.HEX_R
+            cy_mid = mid * 1.5 * HexGrid.HEX_R
+
+            def score(move):
+                _, _, to = move
+                if to in self._centers:
+                    tx, ty = self._centers[to]
+                    return math.hypot(tx - cx_mid, ty - cy_mid)
+                return float('inf')
+        else:
+            def score(move):
+                _, _, to = move
+                tr, tc = to
+                return math.hypot(tr - mid, tc - mid)
+
+        best_score = min(score(m) for m in moves)
+        best_moves = [m for m in moves if abs(score(m) - best_score) < 0.01]
+        return random.choice(best_moves)
+
+    def auto_step(self) -> bool:
+        """
+        Execute one heuristic-chosen move.
+        Returns True if a move was made; False if no moves are available.
+        """
+        move = self._heuristic_move()
+        if move is None:
+            return False
+        fr, _, to = move
+        ok = self.make_move(fr, to)
+        if ok:
+            self.last_move = (fr, to)
+        return ok
+
+    def solve(self) -> list:
+        """
+        Play until no moves remain.
+        Returns list of (from_cell, to_cell) tuples representing every move.
+        """
+        self.reset()
+        moves_made = []
+        while True:
+            move = self._heuristic_move()
+            if move is None:
+                break
+            fr, _, to = move
+            if self.make_move(fr, to):
+                moves_made.append((fr, to))
+                self.last_move = (fr, to)
+        return moves_made
