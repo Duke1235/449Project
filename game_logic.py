@@ -18,6 +18,13 @@ HexGrid  – pixel geometry and adjacency for the hexagonal board
 
 import math
 import random
+import json
+import os
+from datetime import datetime
+
+# Recordings folder is always placed next to game_logic.py, regardless of
+# the working directory the user launches the script from.
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -160,6 +167,133 @@ class HexGrid:
             if best is not None and best_d < step * 0.35 and best != cell:
                 jumps.append((mid, best))
         return jumps
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Game Recorder / Replayer
+# ──────────────────────────────────────────────────────────────────────────────
+
+class GameRecorder:
+    """
+    Records a Peg Solitaire game session to a JSON file and replays it.
+
+    File format (JSON)
+    ------------------
+    {
+      "metadata": {
+        "board_type": "English",
+        "size": 7,
+        "mode": "Manual",          # "Manual" or "Automated"
+        "recorded_at": "<ISO timestamp>"
+      },
+      "events": [
+        {"type": "move",       "from": [r, c], "to": [r2, c2]},
+        {"type": "randomize",  "pegs": [[r, c], ...]},   # snapshot after randomize
+        {"type": "autoplay_start"},
+        {"type": "autoplay_stop"}
+      ]
+    }
+    """
+
+    RECORDS_DIR = os.path.join(_HERE, "recordings")
+
+    # ── recording ─────────────────────────────────────────────────────────────
+
+    def __init__(self, board_type: str, size: int, mode: str):
+        self.board_type = board_type
+        self.size = size
+        self.mode = mode
+        self.events: list = []
+        self._active = False
+
+    def start(self) -> None:
+        """Begin accumulating events."""
+        self.events.clear()
+        self._active = True
+
+    def stop(self) -> None:
+        self._active = False
+
+    @property
+    def is_active(self) -> bool:
+        return self._active
+
+    def record_move(self, from_cell: tuple, to_cell: tuple) -> None:
+        if not self._active:
+            return
+        self.events.append({
+            "type": "move",
+            "from": list(from_cell),
+            "to":   list(to_cell)
+        })
+
+    def record_randomize(self, pegs: set) -> None:
+        """Snapshot the full peg set after a randomize so replay is deterministic."""
+        if not self._active:
+            return
+        self.events.append({
+            "type": "randomize",
+            "pegs": [list(p) for p in sorted(pegs)]
+        })
+
+    def record_autoplay_start(self) -> None:
+        if self._active:
+            self.events.append({"type": "autoplay_start"})
+
+    def record_autoplay_stop(self) -> None:
+        if self._active:
+            self.events.append({"type": "autoplay_stop"})
+
+    def save(self, filepath: str = None) -> str:
+        """
+        Write the recorded game to *filepath* (or auto-generate a name).
+        Returns the path actually written.
+        """
+        if filepath is None:
+            os.makedirs(self.RECORDS_DIR, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filepath = os.path.join(
+                self.RECORDS_DIR,
+                f"game_{self.board_type}_{self.size}_{ts}.json"
+            )
+        payload = {
+            "metadata": {
+                "board_type":   self.board_type,
+                "size":         self.size,
+                "mode":         self.mode,
+                "recorded_at":  datetime.now().isoformat(timespec="seconds")
+            },
+            "events": self.events
+        }
+        with open(filepath, "w") as fh:
+            json.dump(payload, fh, indent=2)
+        return filepath
+
+    # ── replaying ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def load(filepath: str) -> dict:
+        """Load and return the raw JSON dict from a recording file."""
+        with open(filepath, "r") as fh:
+            return json.load(fh)
+
+    @staticmethod
+    def build_replay_game(recording: dict):
+        """
+        Construct a fresh game object matching the recording's metadata.
+        Returns (game, events_list).
+        """
+        meta = recording["metadata"]
+        board_type = meta["board_type"]
+        size       = meta["size"]
+        mode       = meta["mode"]
+
+        if mode == "Automated":
+            game = AutomatedGame(board_type, size)
+        else:
+            game = ManualGame(board_type, size)
+
+        return game, recording["events"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -326,29 +460,30 @@ class ManualGame(SolitaireGame):
     def __init__(self, board_type: str = "Hexagon", size: int = 9):
         super().__init__(board_type, size)
         self.move_history: list = []   # list of (from_cell, to_cell) tuples
+        self.recorder = None           # optional GameRecorder
 
     def reset(self) -> None:
         """Reset board state and clear move history."""
         super().reset()
-        # move_history may not exist yet on the very first super().__init__ call
         if hasattr(self, "move_history"):
             self.move_history.clear()
 
     def make_move(self, from_cell: tuple, to_cell: tuple) -> bool:
-        """Execute a move and record it in move_history."""
+        """Execute a move, record it in move_history, and notify recorder."""
         ok = super().make_move(from_cell, to_cell)
         if ok:
             self.move_history.append((from_cell, to_cell))
+            if self.recorder and self.recorder.is_active:
+                self.recorder.record_move(from_cell, to_cell)
         return ok
 
     def randomize_board(self, num_moves: int = 10) -> int:
         """
-        Randomize board state by executing up to num_moves random legal moves
-        starting from the current position.
+        Randomize board state by executing up to num_moves random legal moves.
 
         Returns the number of moves actually executed.
-        Does NOT record moves in move_history (randomization is not a player
-        move sequence).
+        Does NOT record moves in move_history. Instead sends a full peg-set
+        snapshot to the recorder so replay is deterministic.
         """
         executed = 0
         for _ in range(num_moves):
@@ -356,9 +491,10 @@ class ManualGame(SolitaireGame):
             if not moves:
                 break
             fr, _, to = random.choice(moves)
-            # Call SolitaireGame.make_move directly so we don't pollute history
             super().make_move(fr, to)
             executed += 1
+        if self.recorder and self.recorder.is_active:
+            self.recorder.record_randomize(self.pegs)
         return executed
 
 
@@ -382,7 +518,8 @@ class AutomatedGame(SolitaireGame):
 
     def __init__(self, board_type: str = "Hexagon", size: int = 9):
         super().__init__(board_type, size)
-        self.last_move: tuple | None = None   # (from_cell, to_cell) or None
+        self.last_move = None          # (from_cell, to_cell) or None
+        self.recorder = None           # optional GameRecorder
 
     def reset(self) -> None:
         super().reset()
@@ -432,6 +569,8 @@ class AutomatedGame(SolitaireGame):
         ok = self.make_move(fr, to)
         if ok:
             self.last_move = (fr, to)
+            if self.recorder and self.recorder.is_active:
+                self.recorder.record_move(fr, to)
         return ok
 
     def solve(self) -> list:

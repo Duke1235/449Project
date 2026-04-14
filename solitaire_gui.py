@@ -11,10 +11,12 @@ SolitaireApp  – main Tk window; owns the canvas, controls, event loop
 """
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import math
+import os
+import time
 
-from game_logic import Board, HexGrid, SolitaireGame, ManualGame, AutomatedGame
+from game_logic import Board, HexGrid, SolitaireGame, ManualGame, AutomatedGame, GameRecorder
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -57,6 +59,7 @@ HEX_R   = 21
 CELL_SQ = 52
 
 AUTOPLAY_DELAY_MS = 400   # milliseconds between auto-steps
+REPLAY_DELAY_MS   = 600   # milliseconds between replay steps
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -85,12 +88,21 @@ class SolitaireApp(tk.Tk):
         self.board_type_var = tk.StringVar(value="Hexagon")
         self.game_mode_var  = tk.StringVar(value="Manual")
         self.size_var       = tk.IntVar(value=9)
+        self.record_var     = tk.BooleanVar(value=False)
 
         # Game state
         self.game: SolitaireGame = None
         self.selected: tuple     = None
         self.valid_targets: list = []
         self._auto_job           = None   # tk after() handle
+        self._recorder: GameRecorder = None
+
+        # Replay state
+        self._replay_events: list = []
+        self._replay_game: SolitaireGame = None
+        self._replay_job  = None
+        self._replay_idx  = 0
+        REPLAY_DELAY_MS   = 600
 
         # Geometry cache
         self.display_centers: dict = {}
@@ -162,6 +174,27 @@ class SolitaireApp(tk.Tk):
         )
         self.auto_btn.pack(pady=(4, 4), fill="x")
 
+        # ── Record / Replay ───────────────────────────────────────────────────
+        tk.Checkbutton(
+            panel, text="Record game", variable=self.record_var,
+            bg=C_PANEL, fg=C_TEXT, selectcolor=C_BG,
+            activebackground=C_PANEL, activeforeground=C_VALID_BD,
+            font=("Helvetica", 11)
+        ).pack(anchor="w", pady=(14, 2))
+
+        self.replay_btn = tk.Button(
+            panel, text="⏮ Replay", command=self._start_replay,
+            bg="#16a085", fg="white", relief="flat",
+            padx=10, pady=6, font=("Helvetica", 12, "bold"), cursor="hand2"
+        )
+        self.replay_btn.pack(pady=(2, 4), fill="x")
+
+        tk.Button(
+            panel, text="🗑 Clear Recordings", command=self._clear_recordings,
+            bg="#7f8c8d", fg="white", relief="flat",
+            padx=10, pady=6, font=("Helvetica", 11, "bold"), cursor="hand2"
+        ).pack(pady=(0, 4), fill="x")
+
         # ── Status ────────────────────────────────────────────────────────────
         self.peg_lbl = tk.Label(panel, text="Pegs: 0", bg=C_PANEL, fg=C_TEXT,
                                 font=("Helvetica", 11))
@@ -197,6 +230,7 @@ class SolitaireApp(tk.Tk):
     def _new_game(self) -> None:
         """Create a fresh game with the chosen settings and redraw."""
         self._stop_autoplay()
+        self._stop_replay()
 
         bt   = self.board_type_var.get()
         mode = self.game_mode_var.get()
@@ -217,6 +251,12 @@ class SolitaireApp(tk.Tk):
             self.rand_btn.config(state="disabled")
             self.auto_btn.config(text="▶ Start", state="normal")
             self.canvas.unbind("<Button-1>")
+
+        # Attach a fresh recorder if the checkbox is ticked
+        self._recorder = GameRecorder(bt, size, mode)
+        self.game.recorder = self._recorder
+        if self.record_var.get():
+            self._recorder.start()
 
         self.selected      = None
         self.valid_targets = []
@@ -265,14 +305,18 @@ class SolitaireApp(tk.Tk):
     def _toggle_autoplay(self) -> None:
         """Start or stop the autoplay loop (works for both game modes)."""
         if self._auto_job is not None:
+            if self._recorder and self._recorder.is_active:
+                self._recorder.record_autoplay_stop()
             self._stop_autoplay()
             return
+
+        if self._recorder and self._recorder.is_active:
+            self._recorder.record_autoplay_start()
 
         if isinstance(self.game, AutomatedGame):
             self._auto_btn_running()
             self._auto_step_loop()
         else:
-            # Manual mode: temporarily run the heuristic on the ManualGame
             self._auto_btn_running()
             self._auto_step_manual_loop()
 
@@ -441,6 +485,7 @@ class SolitaireApp(tk.Tk):
 
     def _check_end_of_game(self) -> None:
         if self.game.is_win():
+            self._save_recording_if_active()
             messagebox.showinfo(
                 "🎉 You Win!",
                 f"Incredible! Only 1 peg left!\n"
@@ -448,6 +493,7 @@ class SolitaireApp(tk.Tk):
             )
             self.status_lbl.config(text="🎉 You Win!")
         elif self.game.is_game_over():
+            self._save_recording_if_active()
             mode = "Automated" if isinstance(self.game, AutomatedGame) else "Manual"
             messagebox.showinfo(
                 "Game Over",
@@ -457,6 +503,134 @@ class SolitaireApp(tk.Tk):
                 f"Press 'New Game' to try again."
             )
             self.status_lbl.config(text="Game Over!")
+
+    def _save_recording_if_active(self) -> None:
+        """Save the current recording to disk if recording is active."""
+        if self._recorder and self._recorder.is_active:
+            self._recorder.stop()
+            try:
+                path = self._recorder.save()
+                self.status_lbl.config(text=f"Saved: {os.path.basename(path)}")
+            except Exception as exc:
+                messagebox.showerror("Save Error", str(exc))
+
+    # ── Replay ────────────────────────────────────────────────────────────────
+
+    def _start_replay(self) -> None:
+        """Ask the user for a recording file and begin playback."""
+        self._stop_autoplay()
+        self._stop_replay()
+
+        filepath = filedialog.askopenfilename(
+            title="Open recording",
+            filetypes=[("JSON recordings", "*.json"), ("All files", "*.*")],
+            initialdir=GameRecorder.RECORDS_DIR if os.path.isdir(GameRecorder.RECORDS_DIR) else "."
+        )
+        if not filepath:
+            return
+
+        try:
+            recording = GameRecorder.load(filepath)
+            self._replay_game, self._replay_events = GameRecorder.build_replay_game(recording)
+        except Exception as exc:
+            messagebox.showerror("Load Error", f"Could not load recording:\n{exc}")
+            return
+
+        # Sync GUI controls to the recording's board settings
+        meta = recording["metadata"]
+        self.board_type_var.set(meta["board_type"])
+        self.game_mode_var.set(meta["mode"])
+        self.size_var.set(meta["size"])
+
+        # Use the replay game as the active game so the board renders correctly
+        self.game = self._replay_game
+        self.selected      = None
+        self.valid_targets = []
+        self.canvas.unbind("<Button-1>")
+        self.rand_btn.config(state="disabled")
+        self.auto_btn.config(state="disabled")
+        self.replay_btn.config(text="⏹ Stop Replay")
+
+        self._build_display()
+        self._draw()
+        self._replay_idx = 0
+        self.status_lbl.config(text="Replaying…")
+        self._replay_job = self.after(REPLAY_DELAY_MS, self._replay_step)
+
+    def _replay_step(self) -> None:
+        """Apply the next event from the recording and schedule the next step."""
+        if self._replay_idx >= len(self._replay_events):
+            self._stop_replay()
+            self._check_end_of_game()
+            return
+
+        event = self._replay_events[self._replay_idx]
+        self._replay_idx += 1
+
+        etype = event["type"]
+        if etype == "move":
+            fr = tuple(event["from"])
+            to = tuple(event["to"])
+            # Use SolitaireGame.make_move directly (no history side-effects)
+            SolitaireGame.make_move(self.game, fr, to)
+            self._draw()
+        elif etype == "randomize":
+            # Restore the exact peg snapshot recorded after randomize
+            self.game.pegs = {tuple(p) for p in event["pegs"]}
+            self._draw()
+            self.status_lbl.config(text="Replaying… (randomize)")
+        elif etype in ("autoplay_start", "autoplay_stop"):
+            pass  # informational only
+
+        if self._replay_idx < len(self._replay_events):
+            self._replay_job = self.after(REPLAY_DELAY_MS, self._replay_step)
+        else:
+            self._stop_replay()
+            self._check_end_of_game()
+
+    def _stop_replay(self) -> None:
+        if self._replay_job is not None:
+            self.after_cancel(self._replay_job)
+            self._replay_job = None
+        self.replay_btn.config(text="⏮ Replay")
+        # Re-enable normal controls only if not in a live game
+        if self.game is not None and self.game is self._replay_game:
+            # Restore click/button state based on game type
+            if isinstance(self.game, ManualGame):
+                self.canvas.bind("<Button-1>", self._on_click)
+                self.rand_btn.config(state="normal")
+            self.auto_btn.config(state="normal")
+
+    def _clear_recordings(self) -> None:
+        """Delete all .json files in the recordings folder after confirmation."""
+        rec_dir = GameRecorder.RECORDS_DIR
+        if not os.path.isdir(rec_dir):
+            messagebox.showinfo("Clear Recordings", "No recordings folder found — nothing to clear.")
+            return
+
+        files = [f for f in os.listdir(rec_dir) if f.endswith(".json")]
+        if not files:
+            messagebox.showinfo("Clear Recordings", "Recordings folder is already empty.")
+            return
+
+        confirmed = messagebox.askyesno(
+            "Clear Recordings",
+            f"Delete {len(files)} recording{'s' if len(files) != 1 else ''}?\nThis cannot be undone."
+        )
+        if not confirmed:
+            return
+
+        errors = []
+        for fname in files:
+            try:
+                os.remove(os.path.join(rec_dir, fname))
+            except Exception as exc:
+                errors.append(f"{fname}: {exc}")
+
+        if errors:
+            messagebox.showerror("Clear Recordings", "Some files could not be deleted:\n" + "\n".join(errors))
+        else:
+            self.status_lbl.config(text=f"Cleared {len(files)} recording{'s' if len(files) != 1 else ''}.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

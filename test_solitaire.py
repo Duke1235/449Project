@@ -26,7 +26,10 @@ Run with:
 import unittest
 import math
 import random
-from game_logic import Board, HexGrid, SolitaireGame, ManualGame, AutomatedGame
+import os
+import json
+import tempfile
+from game_logic import Board, HexGrid, SolitaireGame, ManualGame, AutomatedGame, GameRecorder
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -639,6 +642,446 @@ class TestAdditional(unittest.TestCase):
             fr, _, to = moves[0]
             g.make_move(fr, to)
             self.assertEqual(len(g.move_history), i + 1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# US 20  –  Record a game to a file
+# AC 20.1  recording captures every move
+# AC 20.2  recording captures randomize snapshots
+# AC 20.3  recording saves a valid JSON file
+# AC 20.4  automated game recording captures moves via auto_step
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestRecordGame(unittest.TestCase):
+    """US20 — record a solitaire game into a file."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.game = ManualGame("English", 7)
+        self.recorder = GameRecorder("English", 7, "Manual")
+        self.game.recorder = self.recorder
+
+    # AC 20.1 ─────────────────────────────────────────────────────────────────
+
+    def test_ac20_1_recorder_starts_inactive(self):
+        """A freshly constructed recorder must not be active."""
+        rec = GameRecorder("English", 7, "Manual")
+        self.assertFalse(rec.is_active)
+
+    def test_ac20_1_recorder_active_after_start(self):
+        """Calling start() must activate the recorder."""
+        self.recorder.start()
+        self.assertTrue(self.recorder.is_active)
+
+    def test_ac20_1_move_captured_when_active(self):
+        """Every valid move made while recording must appear in events."""
+        self.recorder.start()
+        fr, _, to = self.game.get_valid_moves()[0]
+        self.game.make_move(fr, to)
+        move_events = [e for e in self.recorder.events if e["type"] == "move"]
+        self.assertEqual(len(move_events), 1)
+        self.assertEqual(move_events[0]["from"], list(fr))
+        self.assertEqual(move_events[0]["to"],   list(to))
+
+    def test_ac20_1_multiple_moves_all_captured(self):
+        """All moves made during a recording must be stored in order."""
+        self.recorder.start()
+        made = []
+        for _ in range(4):
+            moves = self.game.get_valid_moves()
+            if not moves:
+                break
+            fr, _, to = moves[0]
+            self.game.make_move(fr, to)
+            made.append((fr, to))
+        move_events = [e for e in self.recorder.events if e["type"] == "move"]
+        self.assertEqual(len(move_events), len(made))
+
+    def test_ac20_1_move_not_captured_when_inactive(self):
+        """Moves made before start() must NOT be captured."""
+        fr, _, to = self.game.get_valid_moves()[0]
+        self.game.make_move(fr, to)          # recorder not started
+        self.assertEqual(len(self.recorder.events), 0)
+
+    def test_ac20_1_failed_move_not_captured(self):
+        """A rejected move must not produce a recording event."""
+        self.recorder.start()
+        self.game.make_move((0, 0), (0, 6))  # always invalid
+        self.assertEqual(len(self.recorder.events), 0)
+
+    # AC 20.2 ─────────────────────────────────────────────────────────────────
+
+    def test_ac20_2_randomize_captured_as_snapshot(self):
+        """randomize_board() while recording must produce a 'randomize' event."""
+        self.recorder.start()
+        self.game.randomize_board(num_moves=5)
+        rand_events = [e for e in self.recorder.events if e["type"] == "randomize"]
+        self.assertEqual(len(rand_events), 1)
+
+    def test_ac20_2_randomize_snapshot_contains_pegs(self):
+        """The 'randomize' event must store the full peg list."""
+        self.recorder.start()
+        self.game.randomize_board(num_moves=5)
+        snap = next(e for e in self.recorder.events if e["type"] == "randomize")
+        self.assertIn("pegs", snap)
+        self.assertIsInstance(snap["pegs"], list)
+        self.assertGreater(len(snap["pegs"]), 0)
+
+    def test_ac20_2_randomize_snapshot_matches_board(self):
+        """The snapshot must exactly match the board's peg set after randomize."""
+        self.recorder.start()
+        self.game.randomize_board(num_moves=5)
+        snap = next(e for e in self.recorder.events if e["type"] == "randomize")
+        recorded_pegs = {tuple(p) for p in snap["pegs"]}
+        self.assertEqual(recorded_pegs, self.game.pegs)
+
+    def test_ac20_2_randomize_not_captured_when_inactive(self):
+        """randomize_board() before start() must not produce events."""
+        self.game.randomize_board(num_moves=5)
+        self.assertEqual(len(self.recorder.events), 0)
+
+    # AC 20.3 ─────────────────────────────────────────────────────────────────
+
+    def test_ac20_3_save_creates_file(self):
+        """save() must create a file at the given path."""
+        self.recorder.start()
+        fr, _, to = self.game.get_valid_moves()[0]
+        self.game.make_move(fr, to)
+        path = os.path.join(self.tmpdir, "test_game.json")
+        self.recorder.save(path)
+        self.assertTrue(os.path.isfile(path))
+
+    def test_ac20_3_saved_file_is_valid_json(self):
+        """The saved file must be parseable JSON."""
+        self.recorder.start()
+        fr, _, to = self.game.get_valid_moves()[0]
+        self.game.make_move(fr, to)
+        path = os.path.join(self.tmpdir, "test_game.json")
+        self.recorder.save(path)
+        with open(path) as fh:
+            data = json.load(fh)
+        self.assertIn("metadata", data)
+        self.assertIn("events",   data)
+
+    def test_ac20_3_metadata_fields_present(self):
+        """The JSON metadata block must contain board_type, size, mode."""
+        self.recorder.start()
+        path = os.path.join(self.tmpdir, "meta_test.json")
+        self.recorder.save(path)
+        with open(path) as fh:
+            data = json.load(fh)
+        meta = data["metadata"]
+        self.assertEqual(meta["board_type"], "English")
+        self.assertEqual(meta["size"],       7)
+        self.assertEqual(meta["mode"],       "Manual")
+
+    def test_ac20_3_save_returns_filepath(self):
+        """save() must return the path it wrote to."""
+        self.recorder.start()
+        path = os.path.join(self.tmpdir, "ret_path.json")
+        returned = self.recorder.save(path)
+        self.assertEqual(returned, path)
+
+    def test_ac20_3_stop_deactivates_recorder(self):
+        """stop() must set is_active to False."""
+        self.recorder.start()
+        self.recorder.stop()
+        self.assertFalse(self.recorder.is_active)
+
+    # AC 20.4 ─────────────────────────────────────────────────────────────────
+
+    def test_ac20_4_automated_game_moves_recorded(self):
+        """auto_step() while recording must produce move events."""
+        ag = AutomatedGame("English", 7)
+        rec = GameRecorder("English", 7, "Automated")
+        ag.recorder = rec
+        rec.start()
+        for _ in range(5):
+            if not ag.auto_step():
+                break
+        move_events = [e for e in rec.events if e["type"] == "move"]
+        self.assertGreater(len(move_events), 0)
+
+    def test_ac20_4_automated_full_game_recorded(self):
+        """Recording a full automated game must capture all its moves."""
+        ag = AutomatedGame("English", 7)
+        rec = GameRecorder("English", 7, "Automated")
+        ag.recorder = rec
+        rec.start()
+        while ag.auto_step():
+            pass
+        move_events = [e for e in rec.events if e["type"] == "move"]
+        self.assertGreater(len(move_events), 0)
+        path = os.path.join(self.tmpdir, "auto_full.json")
+        rec.save(path)
+        with open(path) as fh:
+            data = json.load(fh)
+        self.assertEqual(data["metadata"]["mode"], "Automated")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# US 21  –  Replay a game from a file
+# AC 21.1  replay rebuilds board state move-by-move
+# AC 21.2  replay handles randomize snapshots correctly
+# AC 21.3  replay of an automated game reproduces move count
+# AC 21.4  load() raises on a bad file
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestReplayGame(unittest.TestCase):
+    """US21 — replay a recorded solitaire game from a file."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def _record_manual_game(self, num_moves=5, board_type="English", size=7):
+        """Helper: play and record num_moves of a ManualGame, return filepath."""
+        game = ManualGame(board_type, size)
+        rec  = GameRecorder(board_type, size, "Manual")
+        game.recorder = rec
+        rec.start()
+        for _ in range(num_moves):
+            moves = game.get_valid_moves()
+            if not moves:
+                break
+            fr, _, to = moves[0]
+            game.make_move(fr, to)
+        rec.stop()
+        path = os.path.join(self.tmpdir, "manual.json")
+        rec.save(path)
+        return path, game   # also return final game state for comparison
+
+    def _record_automated_game(self, board_type="English", size=7):
+        """Helper: run and record a full AutomatedGame, return filepath."""
+        game = AutomatedGame(board_type, size)
+        rec  = GameRecorder(board_type, size, "Automated")
+        game.recorder = rec
+        rec.start()
+        while game.auto_step():
+            pass
+        rec.stop()
+        path = os.path.join(self.tmpdir, "auto.json")
+        rec.save(path)
+        return path, game
+
+    # AC 21.1 ─────────────────────────────────────────────────────────────────
+
+    def test_ac21_1_load_returns_dict_with_metadata_and_events(self):
+        """GameRecorder.load() must return a dict with metadata and events keys."""
+        path, _ = self._record_manual_game()
+        data = GameRecorder.load(path)
+        self.assertIn("metadata", data)
+        self.assertIn("events",   data)
+
+    def test_ac21_1_build_replay_game_returns_game_and_events(self):
+        """build_replay_game() must return a SolitaireGame and an events list."""
+        path, _ = self._record_manual_game()
+        data = GameRecorder.load(path)
+        game, events = GameRecorder.build_replay_game(data)
+        self.assertIsInstance(game, SolitaireGame)
+        self.assertIsInstance(events, list)
+
+    def test_ac21_1_replay_produces_correct_final_peg_count(self):
+        """Replaying all move events must yield the same peg count as the original game."""
+        path, original = self._record_manual_game(num_moves=5)
+        data = GameRecorder.load(path)
+        replay_game, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "move":
+                fr = tuple(event["from"])
+                to = tuple(event["to"])
+                SolitaireGame.make_move(replay_game, fr, to)
+        self.assertEqual(replay_game.peg_count(), original.peg_count())
+
+    def test_ac21_1_replay_produces_correct_peg_positions(self):
+        """After replaying all moves the peg set must match the original game."""
+        path, original = self._record_manual_game(num_moves=5)
+        data = GameRecorder.load(path)
+        replay_game, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "move":
+                fr = tuple(event["from"])
+                to = tuple(event["to"])
+                SolitaireGame.make_move(replay_game, fr, to)
+        self.assertEqual(replay_game.pegs, original.pegs)
+
+    def test_ac21_1_replay_game_board_type_matches(self):
+        """Replayed game must use the same board type as the recorded one."""
+        path, _ = self._record_manual_game(board_type="Diamond", size=7)
+        data = GameRecorder.load(path)
+        game, _ = GameRecorder.build_replay_game(data)
+        self.assertEqual(game.board_type, "Diamond")
+
+    def test_ac21_1_replay_game_size_matches(self):
+        """Replayed game must use the same board size as the recorded one."""
+        path, _ = self._record_manual_game(board_type="English", size=7)
+        data = GameRecorder.load(path)
+        game, _ = GameRecorder.build_replay_game(data)
+        self.assertEqual(game.size, 7)
+
+    def test_ac21_1_replay_move_count_matches_events(self):
+        """Number of move events in the file must equal moves applied during recording."""
+        num_moves = 4
+        path, _ = self._record_manual_game(num_moves=num_moves)
+        data = GameRecorder.load(path)
+        move_events = [e for e in data["events"] if e["type"] == "move"]
+        self.assertEqual(len(move_events), num_moves)
+
+    # AC 21.2 ─────────────────────────────────────────────────────────────────
+
+    def test_ac21_2_randomize_event_in_recording(self):
+        """A game that calls randomize_board must produce a randomize event in the file."""
+        game = ManualGame("English", 7)
+        rec  = GameRecorder("English", 7, "Manual")
+        game.recorder = rec
+        rec.start()
+        # make a move, then randomize
+        fr, _, to = game.get_valid_moves()[0]
+        game.make_move(fr, to)
+        game.randomize_board(num_moves=5)
+        rec.stop()
+        path = os.path.join(self.tmpdir, "rand_game.json")
+        rec.save(path)
+        data = GameRecorder.load(path)
+        rand_events = [e for e in data["events"] if e["type"] == "randomize"]
+        self.assertEqual(len(rand_events), 1)
+
+    def test_ac21_2_replay_randomize_restores_peg_set(self):
+        """Applying a randomize event must restore pegs to the recorded snapshot."""
+        game = ManualGame("English", 7)
+        rec  = GameRecorder("English", 7, "Manual")
+        game.recorder = rec
+        rec.start()
+        game.randomize_board(num_moves=6)
+        pegs_after_rand = frozenset(game.pegs)
+        rec.stop()
+        path = os.path.join(self.tmpdir, "rand_replay.json")
+        rec.save(path)
+
+        data = GameRecorder.load(path)
+        replay_game, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "randomize":
+                replay_game.pegs = {tuple(p) for p in event["pegs"]}
+
+        self.assertEqual(frozenset(replay_game.pegs), pegs_after_rand)
+
+    def test_ac21_2_mixed_move_and_randomize_replay(self):
+        """Move events before and after a randomize event must replay correctly."""
+        game = ManualGame("English", 7)
+        rec  = GameRecorder("English", 7, "Manual")
+        game.recorder = rec
+        rec.start()
+        # move before randomize
+        fr, _, to = game.get_valid_moves()[0]
+        game.make_move(fr, to)
+        # randomize
+        game.randomize_board(num_moves=4)
+        # move after randomize
+        moves = game.get_valid_moves()
+        if moves:
+            fr2, _, to2 = moves[0]
+            game.make_move(fr2, to2)
+        final_pegs = frozenset(game.pegs)
+        rec.stop()
+        path = os.path.join(self.tmpdir, "mixed.json")
+        rec.save(path)
+
+        data  = GameRecorder.load(path)
+        rgame, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "move":
+                SolitaireGame.make_move(rgame, tuple(event["from"]), tuple(event["to"]))
+            elif event["type"] == "randomize":
+                rgame.pegs = {tuple(p) for p in event["pegs"]}
+
+        self.assertEqual(frozenset(rgame.pegs), final_pegs)
+
+    # AC 21.3 ─────────────────────────────────────────────────────────────────
+
+    def test_ac21_3_automated_replay_game_is_automated_game(self):
+        """Replaying an automated recording must produce an AutomatedGame."""
+        path, _ = self._record_automated_game()
+        data = GameRecorder.load(path)
+        game, _ = GameRecorder.build_replay_game(data)
+        self.assertIsInstance(game, AutomatedGame)
+
+    def test_ac21_3_automated_replay_peg_count_matches(self):
+        """Replaying a full automated game must reach the same peg count."""
+        path, original = self._record_automated_game()
+        data = GameRecorder.load(path)
+        replay_game, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "move":
+                SolitaireGame.make_move(replay_game, tuple(event["from"]), tuple(event["to"]))
+        self.assertEqual(replay_game.peg_count(), original.peg_count())
+
+    def test_ac21_3_automated_replay_peg_positions_match(self):
+        """Replaying a full automated game must yield the identical peg set."""
+        path, original = self._record_automated_game()
+        data = GameRecorder.load(path)
+        replay_game, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "move":
+                SolitaireGame.make_move(replay_game, tuple(event["from"]), tuple(event["to"]))
+        self.assertEqual(replay_game.pegs, original.pegs)
+
+    def test_ac21_3_hex_automated_replay_peg_positions_match(self):
+        """Full replay of a Hexagon automated game must reproduce final board."""
+        game = AutomatedGame("Hexagon", 9)
+        rec  = GameRecorder("Hexagon", 9, "Automated")
+        game.recorder = rec
+        rec.start()
+        while game.auto_step():
+            pass
+        rec.stop()
+        path = os.path.join(self.tmpdir, "hex_auto.json")
+        rec.save(path)
+
+        data = GameRecorder.load(path)
+        replay_game, events = GameRecorder.build_replay_game(data)
+        for event in events:
+            if event["type"] == "move":
+                SolitaireGame.make_move(replay_game, tuple(event["from"]), tuple(event["to"]))
+        self.assertEqual(replay_game.pegs, game.pegs)
+
+    # AC 21.4 ─────────────────────────────────────────────────────────────────
+
+    def test_ac21_4_load_raises_on_missing_file(self):
+        """load() must raise an exception when the file does not exist."""
+        with self.assertRaises(Exception):
+            GameRecorder.load("/nonexistent/path/game.json")
+
+    def test_ac21_4_load_raises_on_invalid_json(self):
+        """load() must raise an exception when the file contains invalid JSON."""
+        bad_path = os.path.join(self.tmpdir, "bad.json")
+        with open(bad_path, "w") as fh:
+            fh.write("this is not json {{{{")
+        with self.assertRaises(Exception):
+            GameRecorder.load(bad_path)
+
+    def test_ac21_4_events_list_is_ordered(self):
+        """Events in the loaded file must be in the order they were recorded."""
+        game = ManualGame("English", 7)
+        rec  = GameRecorder("English", 7, "Manual")
+        game.recorder = rec
+        rec.start()
+        recorded_moves = []
+        for _ in range(3):
+            moves = game.get_valid_moves()
+            if not moves:
+                break
+            fr, _, to = moves[0]
+            game.make_move(fr, to)
+            recorded_moves.append((list(fr), list(to)))
+        rec.stop()
+        path = os.path.join(self.tmpdir, "order_test.json")
+        rec.save(path)
+
+        data = GameRecorder.load(path)
+        move_events = [e for e in data["events"] if e["type"] == "move"]
+        for i, (exp_fr, exp_to) in enumerate(recorded_moves):
+            self.assertEqual(move_events[i]["from"], exp_fr)
+            self.assertEqual(move_events[i]["to"],   exp_to)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
